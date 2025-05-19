@@ -5,8 +5,7 @@ interface PageProps {
 	params: { id: string };
 }
 
-export default async function BoardPage(props: Promise<PageProps>) {
-    const { params } = await props;
+export default async function BoardPage({ params }: PageProps) {
     const { id } = params;
     const board = await prisma.board.findUnique({
         where: { id },
