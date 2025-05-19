@@ -1,13 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { generateBoardId } from "@/lib/utils";
 
 export default function Home() {
 	const router = useRouter();
 
-	function createNewBoard() {
-		const id = generateBoardId();
+	async function createNewBoard() {
+		const res = await fetch("/api/generate-id");
+		const { id } = await res.json();
 		router.push(`/board/${id}`);
 	}
 
