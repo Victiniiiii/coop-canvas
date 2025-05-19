@@ -12,11 +12,11 @@ export default function Home() {
 	}
 
 	return (
-		<main style={{ padding: "2rem" }}>
-			<h1>Collaborative Canvas</h1>
+		<main>
+			<h1 className="text-center font-extrabold">Collaborative Canvas</h1>
 			<p>This project is a real-time collaborative drawing board built with Next.js, TypeScript, Pusher, PostgreSQL and Supabase.</p>
 			<p>No authentication required — just create or join a board by URL.</p>
-			<button onClick={createNewBoard}>Create New Board</button>
+			<button className="bg-blue-500" onClick={createNewBoard}>Create New Board</button>
 		</main>
 	);
 }

@@ -21,5 +21,6 @@ model Stroke {
     board     Board    @relation(fields: [boardId], references: [id])
     boardId   String
     path      Json
+    color     String   @default("#000000")
     createdAt DateTime @default(now())
 }

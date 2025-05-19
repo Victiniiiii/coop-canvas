@@ -2,11 +2,24 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Pusher from "pusher-js";
-import type { Point } from "@/types/board";
+import type { Point, Stroke } from "@/types/board";
 
-interface Stroke {
-	id: number;
-	path: Point[];
+function segmentsIntersect(a: Point, b: Point, c: Point, d: Point) {
+	const cross = (p: Point, q: Point, r: Point) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+	const ab = cross(a, b, c) * cross(a, b, d);
+	const cd = cross(c, d, a) * cross(c, d, b);
+	return ab < 0 && cd < 0;
+}
+
+function pathIntersects(pathA: Point[], pathB: Point[]) {
+	for (let i = 1; i < pathA.length; i++) {
+		for (let j = 1; j < pathB.length; j++) {
+			if (segmentsIntersect(pathA[i - 1], pathA[i], pathB[j - 1], pathB[j])) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 export default function BoardClient({ boardId }: { boardId: string }) {
@@ -14,6 +27,8 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 	const [strokes, setStrokes] = useState<Stroke[]>([]);
 	const [currentPath, setCurrentPath] = useState<Point[]>([]);
 	const [isDrawing, setIsDrawing] = useState(false);
+	const [tool, setTool] = useState<"draw" | "erase">("draw");
+	const [color, setColor] = useState<string>("#000000");
 
 	useEffect(() => {
 		fetch(`/api/strokes?boardId=${boardId}`)
@@ -32,6 +47,9 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 				return [...prev, stroke];
 			});
 		});
+		channel.bind("erase", ({ id }: { id: number }) => {
+			setStrokes(prev => prev.filter(s => s.id !== id));
+		});
 		return () => {
 			channel.unbind_all();
 			pusher.unsubscribe(`board-${boardId}`);
@@ -43,27 +61,26 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		if (!canvas) return;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
-
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
-
 		for (const s of strokes) {
 			ctx.beginPath();
+			ctx.strokeStyle = s.color;
 			s.path.forEach((pt, i) => {
-				i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y);
+				if (i === 0) ctx.moveTo(pt.x, pt.y);
+				else ctx.lineTo(pt.x, pt.y);
 			});
 			ctx.stroke();
 		}
-
 		if (currentPath.length) {
 			ctx.beginPath();
+			ctx.strokeStyle = tool === "erase" ? "#FFFFFF" : color;
 			currentPath.forEach((pt, i) => {
-				i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y);
+				if (i === 0) ctx.moveTo(pt.x, pt.y);
+				else ctx.lineTo(pt.x, pt.y);
 			});
-			ctx.strokeStyle = "#444";
 			ctx.stroke();
-			ctx.strokeStyle = "#000";
 		}
-	}, [strokes, currentPath]);
+	}, [strokes, currentPath, tool, color]);
 
 	const startDrawing = (e: React.MouseEvent) => {
 		setIsDrawing(true);
@@ -85,17 +102,40 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		}
 		setIsDrawing(false);
 
-		const tempId = Date.now() * -1;
-		setStrokes(prev => [...prev, { id: tempId, path: currentPath }]);
-
-		fetch("/api/strokes", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ boardId, path: currentPath }),
-		}).catch(console.error);
+		if (tool === "draw") {
+			const tempId = Date.now() * -1;
+			const newStroke: Stroke = { id: tempId, path: currentPath, color };
+			setStrokes(prev => [...prev, newStroke]);
+			fetch("/api/strokes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ boardId, path: currentPath, color }),
+			}).catch(console.error);
+		} else {
+			const toDelete = strokes.filter(s => pathIntersects(currentPath, s.path)).map(s => s.id);
+			toDelete.forEach(async id => {
+				setStrokes(prev => prev.filter(s => s.id !== id));
+				await fetch(`/api/strokes?strokeId=${id}&boardId=${boardId}`, {
+					method: "DELETE",
+				}).catch(console.error);
+			});
+		}
 
 		setCurrentPath([]);
 	};
 
-	return <canvas ref={canvasRef} width={800} height={600} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} style={{ border: "1px solid black", cursor: "crosshair" }} />;
+	return (
+		<div>
+			<div style={{ marginBottom: 8 }}>
+				<button onClick={() => setTool("draw")} style={{ background: tool === "draw" ? "#DDD" : "#FFF", marginRight: 4 }}>
+					Draw
+				</button>
+				<button onClick={() => setTool("erase")} style={{ background: tool === "erase" ? "#DDD" : "#FFF" }}>
+					Erase
+				</button>
+				<input type="color" value={color} onChange={e => setColor(e.target.value)} disabled={tool === "erase"} style={{ marginLeft: 8, cursor: tool === "erase" ? "not-allowed" : "pointer" }} />
+			</div>
+			<canvas ref={canvasRef} width={800} height={600} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} style={{ border: "1px solid black", cursor: "crosshair" }} />
+		</div>
+	);
 }

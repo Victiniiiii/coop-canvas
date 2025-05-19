@@ -10,4 +10,5 @@ export interface BoardData {
 export interface Stroke {
     id: number;
     path: Point[];
+	color: string;
 }
