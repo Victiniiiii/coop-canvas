@@ -65,7 +65,6 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		}
 	}, [strokes, currentPath]);
 
-	// Handlers
 	const startDrawing = (e: React.MouseEvent) => {
 		setIsDrawing(true);
 		const rect = canvasRef.current!.getBoundingClientRect();

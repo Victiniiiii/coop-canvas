@@ -14,7 +14,7 @@ export default function Home() {
 	return (
 		<main style={{ padding: "2rem" }}>
 			<h1>Collaborative Canvas</h1>
-			<p>This project is a real-time collaborative drawing board built with Next.js, TypeScript, Pusher, and SQLite.</p>
+			<p>This project is a real-time collaborative drawing board built with Next.js, TypeScript, Pusher, PostgreSQL and Supabase.</p>
 			<p>No authentication required — just create or join a board by URL.</p>
 			<button onClick={createNewBoard}>Create New Board</button>
 		</main>
