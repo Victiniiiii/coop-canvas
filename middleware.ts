@@ -11,8 +11,7 @@ export function middleware(req: NextRequest) {
 		const boardId = parts[2];
 
 		if (!boardId || !BOARD_ID_REGEX.test(boardId)) {
-			url.pathname = "/404";
-			return NextResponse.rewrite(url);
+			return NextResponse.redirect(new URL("/404", req.url));
 		}
 	}
 
