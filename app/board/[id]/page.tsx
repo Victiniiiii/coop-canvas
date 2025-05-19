@@ -1,11 +1,7 @@
 import { prisma } from "@/lib/db";
 import BoardClient from "./client";
 
-interface PageProps {
-	params: { id: string };
-}
-
-export default async function BoardPage({ params }: PageProps) {
+export default async function BoardPage({ params }: { params: { id: string } }) {
     const { id } = params;
     const board = await prisma.board.findUnique({
         where: { id },
