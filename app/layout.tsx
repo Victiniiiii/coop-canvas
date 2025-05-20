@@ -2,7 +2,7 @@ import "./globals.css";
 import { Analytics } from '@vercel/analytics/react';
 
 export const metadata = {
-    title: "Collaborative Canvas",
+    title: "Co-op Canvas",
     description: "Real-time collaborative canvas app",
 };
 

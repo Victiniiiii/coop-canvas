@@ -8,8 +8,8 @@ export default async function BoardPage({ params }: { params: Promise<{ id: stri
 	});
 
 	return (
-		<main>
-			<h1>Board {id}</h1>
+		<main className="flex flex-col items-center text-center">
+			<h1 className="w-[100vw] h-10 flex items-center justify-center font-bold bg-[rgb(255,255,255,0.5)] mb-5">Board {id}</h1>
 			<BoardClient boardId={id} />
 		</main>
 	);

@@ -126,16 +126,19 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 
 	return (
 		<div>
-			<div style={{ marginBottom: 8 }}>
-				<button onClick={() => setTool("draw")} style={{ background: tool === "draw" ? "#DDD" : "#FFF", marginRight: 4 }}>
+			<div className="flex flex-row items-center justify-around mb-2">
+				<button className="py-1 px-4 rounded-md" onClick={() => setTool("draw")} style={{ background: tool === "draw" ? "#5c5c5c" : "#FFF", color: tool === "draw" ? "white" : "black" }}>
 					Draw
 				</button>
-				<button onClick={() => setTool("erase")} style={{ background: tool === "erase" ? "#DDD" : "#FFF" }}>
+				<button className="py-1 px-4 rounded-md" onClick={() => setTool("erase")} style={{ background: tool === "erase" ? "#5c5c5c" : "#FFF", color: tool === "erase" ? "white" : "black" }}>
 					Erase
 				</button>
-				<input type="color" value={color} onChange={e => setColor(e.target.value)} disabled={tool === "erase"} style={{ marginLeft: 8, cursor: tool === "erase" ? "not-allowed" : "pointer" }} />
+				<div className="flex flex-row items-center justify-center">
+					<label className="text-white">Color:</label>
+					<input type="color" value={color} onChange={e => setColor(e.target.value)} disabled={tool === "erase"} style={{ marginLeft: 8, cursor: tool === "erase" ? "not-allowed" : "pointer" }} />
+				</div>
 			</div>
-			<canvas ref={canvasRef} width={800} height={600} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} style={{ border: "1px solid black", cursor: "crosshair" }} />
+			<canvas ref={canvasRef} width={1200} height={800} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} style={{ border: "1px solid black", cursor: "crosshair", backgroundColor: "white" }} />
 		</div>
 	);
 }
