@@ -82,16 +82,20 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		}
 	}, [strokes, currentPath, tool, color]);
 
+	const getPoint = (x: number, y: number) => {
+		const rect = canvasRef.current!.getBoundingClientRect();
+		return { x: x - rect.left, y: y - rect.top };
+	};
+
 	const startDrawing = (e: React.MouseEvent) => {
 		setIsDrawing(true);
-		const rect = canvasRef.current!.getBoundingClientRect();
-		setCurrentPath([{ x: e.clientX - rect.left, y: e.clientY - rect.top }]);
+		const pt = getPoint(e.clientX, e.clientY);
+		setCurrentPath([pt]);
 	};
 
 	const draw = (e: React.MouseEvent) => {
 		if (!isDrawing) return;
-		const rect = canvasRef.current!.getBoundingClientRect();
-		const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+		const pt = getPoint(e.clientX, e.clientY);
 		setCurrentPath(prev => [...prev, pt]);
 	};
 
@@ -101,7 +105,6 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 			return;
 		}
 		setIsDrawing(false);
-
 		if (tool === "draw") {
 			const tempId = Date.now() * -1;
 			const newStroke: Stroke = { id: tempId, path: currentPath, color };
@@ -120,25 +123,93 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 				}).catch(console.error);
 			});
 		}
+		setCurrentPath([]);
+	};
 
+	const startTouch = (e: React.TouchEvent) => {
+		e.preventDefault();
+		if (e.touches.length === 0) return;
+		setIsDrawing(true);
+		const touch = e.touches[0];
+		const pt = getPoint(touch.clientX, touch.clientY);
+		setCurrentPath([pt]);
+	};
+
+	const touchMove = (e: React.TouchEvent) => {
+		e.preventDefault();
+		if (!isDrawing || e.touches.length === 0) return;
+		const touch = e.touches[0];
+		const pt = getPoint(touch.clientX, touch.clientY);
+		setCurrentPath(prev => [...prev, pt]);
+	};
+
+	const endTouch = (e: React.TouchEvent) => {
+		e.preventDefault();
+		if (!isDrawing) return;
+		setIsDrawing(false);
+		if (currentPath.length === 0) {
+			setCurrentPath([]);
+			return;
+		}
+		if (tool === "draw") {
+			const tempId = Date.now() * -1;
+			const newStroke: Stroke = { id: tempId, path: currentPath, color };
+			setStrokes(prev => [...prev, newStroke]);
+			fetch("/api/strokes", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ boardId, path: currentPath, color }),
+			}).catch(console.error);
+		} else {
+			const toDelete = strokes.filter(s => pathIntersects(currentPath, s.path)).map(s => s.id);
+			toDelete.forEach(async id => {
+				setStrokes(prev => prev.filter(s => s.id !== id));
+				await fetch(`/api/strokes?strokeId=${id}&boardId=${boardId}`, {
+					method: "DELETE",
+				}).catch(console.error);
+			});
+		}
 		setCurrentPath([]);
 	};
 
 	return (
 		<div>
 			<div className="flex flex-row items-center justify-around mb-2">
-				<button className="py-1 px-4 rounded-md" onClick={() => setTool("draw")} style={{ background: tool === "draw" ? "#5c5c5c" : "#FFF", color: tool === "draw" ? "white" : "black" }}>
+				<button
+					className="py-1 px-4 rounded-md"
+					onClick={() => setTool("draw")}
+					style={{
+						background: tool === "draw" ? "#5c5c5c" : "#FFF",
+						color: tool === "draw" ? "white" : "black",
+					}}
+				>
 					Draw
 				</button>
-				<button className="py-1 px-4 rounded-md" onClick={() => setTool("erase")} style={{ background: tool === "erase" ? "#5c5c5c" : "#FFF", color: tool === "erase" ? "white" : "black" }}>
+				<button
+					className="py-1 px-4 rounded-md"
+					onClick={() => setTool("erase")}
+					style={{
+						background: tool === "erase" ? "#5c5c5c" : "#FFF",
+						color: tool === "erase" ? "white" : "black",
+					}}
+				>
 					Erase
 				</button>
 				<div className="flex flex-row items-center justify-center">
 					<label className="text-white">Color:</label>
-					<input type="color" value={color} onChange={e => setColor(e.target.value)} disabled={tool === "erase"} style={{ marginLeft: 8, cursor: tool === "erase" ? "not-allowed" : "pointer" }} />
+					<input
+						type="color"
+						value={color}
+						onChange={e => setColor(e.target.value)}
+						disabled={tool === "erase"}
+						style={{
+							marginLeft: 8,
+							cursor: tool === "erase" ? "not-allowed" : "pointer",
+						}}
+					/>
 				</div>
 			</div>
-			<canvas ref={canvasRef} width={1200} height={800} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} style={{ border: "1px solid black", cursor: "crosshair", backgroundColor: "white" }} />
+			<canvas ref={canvasRef} width={1200} height={800} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} onTouchStart={startTouch} onTouchMove={touchMove} onTouchEnd={endTouch} onTouchCancel={endTouch} style={{ border: "1px solid black", cursor: "crosshair", backgroundColor: "white" }} />
 		</div>
 	);
 }
