@@ -3,45 +3,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import Pusher from "pusher-js";
 import type { Point, Stroke } from "@/types/board";
-
-function getBoundingBox(path: Point[]) {
-	let minX = Infinity,
-		minY = Infinity,
-		maxX = -Infinity,
-		maxY = -Infinity;
-	for (let { x, y } of path) {
-		if (x < minX) minX = x;
-		if (y < minY) minY = y;
-		if (x > maxX) maxX = x;
-		if (y > maxY) maxY = y;
-	}
-	return { minX, minY, maxX, maxY };
-}
-
-function boxesOverlap(a: ReturnType<typeof getBoundingBox>, b: ReturnType<typeof getBoundingBox>) {
-	return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
-}
-
-function segmentsIntersect(a: Point, b: Point, c: Point, d: Point) {
-	const cross = (p: Point, q: Point, r: Point) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
-	const ab = cross(a, b, c) * cross(a, b, d);
-	const cd = cross(c, d, a) * cross(c, d, b);
-	return ab < 0 && cd < 0;
-}
-
-function pathIntersects(pathA: Point[], pathB: Point[]) {
-	for (let i = 1; i < pathA.length; i++) {
-		for (let j = 1; j < pathB.length; j++) {
-			if (segmentsIntersect(pathA[i - 1], pathA[i], pathB[j - 1], pathB[j])) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
+import { getBoundingBox, boxesOverlap, pathIntersects } from "./utilities";
 
 export default function BoardClient({ boardId }: { boardId: string }) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
+	const activeCanvasRef = useRef<HTMLCanvasElement>(null);
+	const canvasContainerRef = useRef<HTMLDivElement>(null);
 	const strokesRef = useRef<Stroke[]>([]);
 	const [strokes, setStrokes] = useState<Stroke[]>([]);
 	const isDrawingRef = useRef(false);
@@ -49,16 +16,85 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 	const lastPointRef = useRef<Point | null>(null);
 	const [tool, setTool] = useState<"draw" | "erase">("draw");
 	const [color, setColor] = useState<string>("#000000");
+	const isLoadedRef = useRef(false);
+	const operationQueueRef = useRef<Array<() => Promise<void>>>([]);
+	const isProcessingQueueRef = useRef(false);
+	const pendingOperationsRef = useRef(new Set<string>());
+	const [isLoading, setIsLoading] = useState(true);
+	const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 800 });
+	const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+	const [isPanning, setIsPanning] = useState(false);
+	const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
+	const [canvasMobileMode, setCanvasMobileMode] = useState(false);
+	const [isMoving, setIsMoving] = useState(false);
+
+	const processQueue = async () => {
+		if (isProcessingQueueRef.current || operationQueueRef.current.length === 0) return;
+
+		isProcessingQueueRef.current = true;
+
+		while (operationQueueRef.current.length > 0) {
+			const operation = operationQueueRef.current.shift();
+			if (operation) {
+				try {
+					await operation();
+				} catch (error) {
+					console.error("Error processing operation:", error);
+				}
+			}
+		}
+
+		isProcessingQueueRef.current = false;
+	};
+
+	const queueOperation = (operation: () => Promise<void>) => {
+		operationQueueRef.current.push(operation);
+		processQueue();
+	};
+
+	useEffect(() => {
+		const handleResize = () => {
+			const isMobile = window.innerWidth <= 768;
+			setCanvasMobileMode(isMobile);
+
+			if (isMobile) {
+				setCanvasSize({ width: 1200, height: 800 });
+			} else {
+				const containerWidth = canvasContainerRef.current?.clientWidth || window.innerWidth - 20;
+				const containerHeight = window.innerHeight - 150;
+				const width = Math.min(containerWidth, 1200);
+				const height = Math.min(containerHeight, 800);
+				setCanvasSize({ width, height });
+			}
+		};
+
+		handleResize();
+
+		window.addEventListener("resize", handleResize);
+
+		return () => window.removeEventListener("resize", handleResize);
+	}, []);
 
 	useEffect(() => {
 		async function fetchStrokes() {
+			if (pendingOperationsRef.current.has("fetch")) return;
+
+			pendingOperationsRef.current.add("fetch");
+			setIsLoading(true);
 			try {
 				const res = await fetch(`/api/strokes?boardId=${boardId}`);
 				const data: Stroke[] = await res.json();
 				strokesRef.current = data;
 				setStrokes(data);
-			} catch {}
+				isLoadedRef.current = true;
+			} catch (error) {
+				console.error("Error fetching strokes:", error);
+			} finally {
+				pendingOperationsRef.current.delete("fetch");
+				setIsLoading(false);
+			}
 		}
+
 		fetchStrokes();
 	}, [boardId]);
 
@@ -66,6 +102,7 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
 			cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
 		});
+
 		const channel = pusher.subscribe(`board-${boardId}`);
 
 		channel.bind("stroke", (stroke: Stroke) => {
@@ -74,6 +111,7 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 				setStrokes([...strokesRef.current]);
 			}
 		});
+
 		channel.bind("erase", ({ id }: { id: number }) => {
 			strokesRef.current = strokesRef.current.filter(s => s.id !== id);
 			setStrokes([...strokesRef.current]);
@@ -90,11 +128,15 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		if (!canvas) return;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
+
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
+
 		for (const s of strokes) {
 			ctx.beginPath();
 			ctx.strokeStyle = s.color;
 			const path = s.path;
+			if (path.length === 0) continue;
+
 			ctx.moveTo(path[0].x, path[0].y);
 			for (let i = 1; i < path.length; i++) {
 				ctx.lineTo(path[i].x, path[i].y);
@@ -103,57 +145,130 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		}
 	}, [strokes]);
 
+	useEffect(() => {
+		const activeCanvas = activeCanvasRef.current;
+		if (!activeCanvas) return;
+
+		const ctx = activeCanvas.getContext("2d");
+		if (!ctx) return;
+
+		ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+	}, []);
+
 	const getPoint = (x: number, y: number) => {
 		const rect = canvasRef.current!.getBoundingClientRect();
-		return { x: x - rect.left, y: y - rect.top };
+		return {
+			x: x - rect.left - panOffset.x,
+			y: y - rect.top - panOffset.y,
+		};
 	};
 
 	const startDrawing = (x: number, y: number) => {
-		const canvas = canvasRef.current;
-		if (!canvas) return;
+		if (isMoving) return;
+
+		const activeCanvas = activeCanvasRef.current;
+		if (!activeCanvas) return;
+
 		isDrawingRef.current = true;
 		const pt = getPoint(x, y);
 		currentPathRef.current = [pt];
 		lastPointRef.current = pt;
 	};
 
+	const startPanning = (x: number, y: number) => {
+		setIsPanning(true);
+		setIsMoving(true);
+		lastPanPosRef.current = { x, y };
+	};
+
+	const panMove = (x: number, y: number) => {
+		if (!isPanning || !lastPanPosRef.current) return;
+
+		const dx = x - lastPanPosRef.current.x;
+		const dy = y - lastPanPosRef.current.y;
+
+		setPanOffset(prev => ({
+			x: prev.x + dx,
+			y: prev.y + dy,
+		}));
+
+		lastPanPosRef.current = { x, y };
+	};
+
+	const endPanning = () => {
+		setIsPanning(false);
+		lastPanPosRef.current = null;
+
+		setTimeout(() => {
+			setIsMoving(false);
+		}, 100);
+	};
+
 	const drawMove = (x: number, y: number) => {
 		if (!isDrawingRef.current) return;
 		const last = lastPointRef.current;
 		if (!last) return;
-		const canvas = canvasRef.current;
-		if (!canvas) return;
-		const ctx = canvas.getContext("2d");
+
+		const activeCanvas = activeCanvasRef.current;
+		if (!activeCanvas) return;
+
+		const ctx = activeCanvas.getContext("2d");
 		if (!ctx) return;
+
 		const pt = getPoint(x, y);
+
 		ctx.beginPath();
 		ctx.strokeStyle = tool === "erase" ? "#FFFFFF" : color;
+		ctx.lineWidth = 2;
 		ctx.moveTo(last.x, last.y);
 		ctx.lineTo(pt.x, pt.y);
 		ctx.stroke();
+
 		currentPathRef.current.push(pt);
 		lastPointRef.current = pt;
 	};
 
-	const endDrawing = async () => {
+	const endDrawing = () => {
 		if (!isDrawingRef.current) return;
 		isDrawingRef.current = false;
+
 		const path = currentPathRef.current;
 		if (path.length === 0) return;
 
 		if (tool === "draw") {
+			const activeCanvas = activeCanvasRef.current;
+			if (activeCanvas) {
+				const ctx = activeCanvas.getContext("2d");
+				if (ctx) ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+			}
+
 			const tempId = Date.now() * -1;
 			const newStroke: Stroke = { id: tempId, path, color };
 			strokesRef.current = [...strokesRef.current, newStroke];
 			setStrokes([...strokesRef.current]);
-			try {
-				await fetch("/api/strokes", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ boardId, path, color }),
-				});
-			} catch {}
-		} else {
+
+			queueOperation(async () => {
+				try {
+					const res = await fetch("/api/strokes", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ boardId, path, color }),
+					});
+
+					if (!res.ok) {
+						console.error("Failed to save stroke:", await res.text());
+					}
+				} catch (error) {
+					console.error("Error saving stroke:", error);
+				}
+			});
+		} else if (tool === "erase") {
+			const activeCanvas = activeCanvasRef.current;
+			if (activeCanvas) {
+				const ctx = activeCanvas.getContext("2d");
+				if (ctx) ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+			}
+
 			const eraseBox = getBoundingBox(path);
 			const toDelete = strokesRef.current
 				.filter(s => {
@@ -162,14 +277,25 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 				})
 				.map(s => s.id);
 
-			for (let id of toDelete) {
-				strokesRef.current = strokesRef.current.filter(s => s.id !== id);
+			if (toDelete.length > 0) {
+				strokesRef.current = strokesRef.current.filter(s => !toDelete.includes(s.id));
 				setStrokes([...strokesRef.current]);
-				try {
-					await fetch(`/api/strokes?strokeId=${id}&boardId=${boardId}`, {
-						method: "DELETE",
+
+				for (const id of toDelete) {
+					queueOperation(async () => {
+						try {
+							const res = await fetch(`/api/strokes?strokeId=${id}&boardId=${boardId}`, {
+								method: "DELETE",
+							});
+
+							if (!res.ok) {
+								console.error(`Failed to delete stroke ${id}:`, await res.text());
+							}
+						} catch (error) {
+							console.error(`Error deleting stroke ${id}:`, error);
+						}
 					});
-				} catch {}
+				}
 			}
 		}
 
@@ -178,72 +304,139 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 	};
 
 	return (
-		<div>
-			<div className="flex flex-row items-center justify-around mb-2">
-				<button
-					className="py-1 px-4 rounded-md"
-					onClick={() => setTool("draw")}
-					style={{
-						background: tool === "draw" ? "#5c5c5c" : "#FFF",
-						color: tool === "draw" ? "white" : "black",
-					}}
-				>
-					Draw
-				</button>
-				<button
-					className="py-1 px-4 rounded-md"
-					onClick={() => setTool("erase")}
-					style={{
-						background: tool === "erase" ? "#5c5c5c" : "#FFF",
-						color: tool === "erase" ? "white" : "black",
-					}}
-				>
-					Erase
-				</button>
-				<div className="flex flex-row items-center justify-center">
-					<label className="text-white">Color:</label>
-					<input
-						type="color"
-						value={color}
-						onChange={e => setColor(e.target.value)}
-						disabled={tool === "erase"}
-						style={{
-							marginLeft: 8,
-							cursor: tool === "erase" ? "not-allowed" : "pointer",
-						}}
-					/>
+		<div className="w-full max-w-screen-xl mx-auto px-2">
+			{isLoading ? (
+				<div className="flex items-center justify-center w-full h-64">
+					<div className="flex flex-col items-center justify-center">
+						<div className="w-12 h-12 border-4 border-t-blue-500 border-b-blue-500 border-l-transparent border-r-transparent rounded-full animate-spin"></div>
+						<p className="mt-4 text-white text-lg">Loading board...</p>
+					</div>
 				</div>
-			</div>
-			<canvas
-				ref={canvasRef}
-				width={1200}
-				height={800}
-				onMouseDown={e => startDrawing(e.clientX, e.clientY)}
-				onMouseMove={e => drawMove(e.clientX, e.clientY)}
-				onMouseUp={endDrawing}
-				onMouseLeave={endDrawing}
-				onTouchStart={e => {
-					e.preventDefault();
-					if (!e.touches.length) return;
-					const t = e.touches[0];
-					startDrawing(t.clientX, t.clientY);
-				}}
-				onTouchMove={e => {
-					e.preventDefault();
-					if (!isDrawingRef.current || !e.touches.length) return;
-					const t = e.touches[0];
-					drawMove(t.clientX, t.clientY);
-				}}
-				onTouchEnd={e => {
-					e.preventDefault();
-					endDrawing();
-				}}
-				onTouchCancel={e => {
-					e.preventDefault();
-					endDrawing();
-				}}
-				style={{ border: "1px solid black", cursor: "crosshair", backgroundColor: "white" }}
-			/>
+			) : (
+				<>
+					<div className="flex flex-row flex-wrap items-center justify-between mb-2 gap-2">
+						<div className="flex space-x-2">
+							<button className={`py-1 px-4 rounded-md ${tool === "draw" ? "bg-gray-700 text-white" : "bg-white text-black"}`} onClick={() => setTool("draw")}>
+								Draw
+							</button>
+							<button className={`py-1 px-4 rounded-md ${tool === "erase" ? "bg-gray-700 text-white" : "bg-white text-black"}`} onClick={() => setTool("erase")}>
+								Erase
+							</button>
+						</div>
+						<div className="flex flex-row items-center justify-center">
+							<label className="text-white mr-1">Color:</label>
+							<input type="color" value={color} onChange={e => setColor(e.target.value)} disabled={tool === "erase"} className={`${tool === "erase" ? "cursor-not-allowed" : "cursor-pointer"}`} />
+						</div>
+					</div>
+
+					{canvasMobileMode && (
+						<div className="mb-2 flex justify-center">
+							<button
+								className="bg-blue-500 py-1 px-4 rounded-md text-white"
+								onTouchStart={e => {
+									e.preventDefault();
+									startPanning(e.touches[0].clientX, e.touches[0].clientY);
+								}}
+								onMouseDown={e => startPanning(e.clientX, e.clientY)}
+							>
+								{isPanning ? "Release to Draw" : "Hold to Move Canvas"}
+							</button>
+						</div>
+					)}
+
+					<div ref={canvasContainerRef} className={`relative mx-auto overflow-hidden ${canvasMobileMode ? "border border-gray-400 rounded-md" : ""}`} style={canvasMobileMode ? { width: "100%", height: "70vh" } : {}}>
+						<div
+							style={{
+								width: canvasSize.width,
+								height: canvasSize.height,
+								transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
+								transition: "transform 0.05s ease",
+							}}
+							className="relative"
+						>
+							<canvas ref={canvasRef} width={canvasSize.width} height={canvasSize.height} className="absolute top-0 left-0 z-10 bg-white rounded-md" />
+							<canvas
+								ref={activeCanvasRef}
+								width={canvasSize.width}
+								height={canvasSize.height}
+								onMouseDown={e => {
+									if (canvasMobileMode && isPanning) {
+										panMove(e.clientX, e.clientY);
+									} else {
+										startDrawing(e.clientX, e.clientY);
+									}
+								}}
+								onMouseMove={e => {
+									if (isPanning) {
+										panMove(e.clientX, e.clientY);
+									} else {
+										drawMove(e.clientX, e.clientY);
+									}
+								}}
+								onMouseUp={e => {
+									if (isPanning) {
+										endPanning();
+									} else {
+										endDrawing();
+									}
+								}}
+								onMouseLeave={e => {
+									if (isPanning) {
+										endPanning();
+									} else {
+										endDrawing();
+									}
+								}}
+								onTouchStart={e => {
+									e.preventDefault();
+									if (!e.touches.length) return;
+
+									const t = e.touches[0];
+									if (canvasMobileMode && isPanning) {
+										panMove(t.clientX, t.clientY);
+									} else {
+										startDrawing(t.clientX, t.clientY);
+									}
+								}}
+								onTouchMove={e => {
+									e.preventDefault();
+									if (!e.touches.length) return;
+
+									const t = e.touches[0];
+									if (isPanning) {
+										panMove(t.clientX, t.clientY);
+									} else if (isDrawingRef.current) {
+										drawMove(t.clientX, t.clientY);
+									}
+								}}
+								onTouchEnd={e => {
+									e.preventDefault();
+									if (isPanning) {
+										endPanning();
+									} else {
+										endDrawing();
+									}
+								}}
+								onTouchCancel={e => {
+									e.preventDefault();
+									if (isPanning) {
+										endPanning();
+									} else {
+										endDrawing();
+									}
+								}}
+								className="absolute top-0 left-0 z-20 bg-transparent cursor-crosshair rounded-md touch-none"
+							/>
+						</div>
+					</div>
+
+					{canvasMobileMode && (
+						<div className="mt-2 text-center text-white text-sm">
+							<p>Canvas can be moved by holding the button above.</p>
+						</div>
+					)}
+				</>
+			)}
 		</div>
 	);
 }
