@@ -14,7 +14,7 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 	const isDrawingRef = useRef(false);
 	const currentPathRef = useRef<Point[]>([]);
 	const lastPointRef = useRef<Point | null>(null);
-	const [tool, setTool] = useState<"draw" | "erase">("draw");
+	const [tool, setTool] = useState<"draw" | "erase" | "move">("draw");
 	const [color, setColor] = useState<string>("#000000");
 	const isLoadedRef = useRef(false);
 	const operationQueueRef = useRef<Array<() => Promise<void>>>([]);
@@ -23,16 +23,12 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 	const [isLoading, setIsLoading] = useState(true);
 	const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 800 });
 	const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
-	const [isPanning, setIsPanning] = useState(false);
 	const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
 	const [canvasMobileMode, setCanvasMobileMode] = useState(false);
-	const [isMoving, setIsMoving] = useState(false);
 
 	const processQueue = async () => {
 		if (isProcessingQueueRef.current || operationQueueRef.current.length === 0) return;
-
 		isProcessingQueueRef.current = true;
-
 		while (operationQueueRef.current.length > 0) {
 			const operation = operationQueueRef.current.shift();
 			if (operation) {
@@ -43,7 +39,6 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 				}
 			}
 		}
-
 		isProcessingQueueRef.current = false;
 	};
 
@@ -69,9 +64,7 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		};
 
 		handleResize();
-
 		window.addEventListener("resize", handleResize);
-
 		return () => window.removeEventListener("resize", handleResize);
 	}, []);
 
@@ -123,14 +116,13 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		};
 	}, [boardId]);
 
-	useEffect(() => {
+	const drawStrokes = () => {
 		const canvas = canvasRef.current;
 		if (!canvas) return;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
-
 		for (const s of strokes) {
 			ctx.beginPath();
 			ctx.strokeStyle = s.color;
@@ -143,7 +135,11 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 			}
 			ctx.stroke();
 		}
-	}, [strokes]);
+	};
+
+	useEffect(() => {
+		drawStrokes();
+	}, [strokes, canvasSize]);
 
 	useEffect(() => {
 		const activeCanvas = activeCanvasRef.current;
@@ -153,18 +149,20 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 		if (!ctx) return;
 
 		ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
-	}, []);
+	}, [canvasSize]);
 
 	const getPoint = (x: number, y: number) => {
-		const rect = canvasRef.current!.getBoundingClientRect();
+		const canvas = canvasRef.current;
+		if (!canvas) return { x: 0, y: 0 };
+		const rect = canvas.getBoundingClientRect();
 		return {
-			x: x - rect.left - panOffset.x,
-			y: y - rect.top - panOffset.y,
+			x: x - rect.left,
+			y: y - rect.top,
 		};
 	};
 
 	const startDrawing = (x: number, y: number) => {
-		if (isMoving) return;
+		if (tool === "move") return;
 
 		const activeCanvas = activeCanvasRef.current;
 		if (!activeCanvas) return;
@@ -176,36 +174,58 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 	};
 
 	const startPanning = (x: number, y: number) => {
-		setIsPanning(true);
-		setIsMoving(true);
+		if (tool !== "move") return;
 		lastPanPosRef.current = { x, y };
 	};
 
 	const panMove = (x: number, y: number) => {
-		if (!isPanning || !lastPanPosRef.current) return;
+		if (tool !== "move" || !lastPanPosRef.current) return;
 
 		const dx = x - lastPanPosRef.current.x;
 		const dy = y - lastPanPosRef.current.y;
 
-		setPanOffset(prev => ({
-			x: prev.x + dx,
-			y: prev.y + dy,
-		}));
+		if (!canvasContainerRef.current) {
+			lastPanPosRef.current = { x, y };
+			return;
+		}
+
+		const containerWidth = canvasContainerRef.current.clientWidth;
+		const containerHeight = canvasContainerRef.current.clientHeight;
+		const { width: cWidth, height: cHeight } = canvasSize;
+
+		setPanOffset(prev => {
+			let newX = prev.x + dx;
+			let newY = prev.y + dy;
+
+			if (cWidth <= containerWidth) {
+				newX = 0;
+			} else {
+				const minX = containerWidth - cWidth;
+				if (newX < minX) newX = minX;
+				if (newX > 0) newX = 0;
+			}
+
+			if (cHeight <= containerHeight) {
+				newY = 0;
+			} else {
+				const minY = containerHeight - cHeight;
+				if (newY < minY) newY = minY;
+				if (newY > 0) newY = 0;
+			}
+
+			return { x: newX, y: newY };
+		});
 
 		lastPanPosRef.current = { x, y };
 	};
 
 	const endPanning = () => {
-		setIsPanning(false);
 		lastPanPosRef.current = null;
-
-		setTimeout(() => {
-			setIsMoving(false);
-		}, 100);
 	};
 
 	const drawMove = (x: number, y: number) => {
-		if (!isDrawingRef.current) return;
+		if (!isDrawingRef.current || tool === "move") return;
+
 		const last = lastPointRef.current;
 		if (!last) return;
 
@@ -314,35 +334,25 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 				</div>
 			) : (
 				<>
-					<div className="flex flex-row flex-wrap items-center justify-between mb-2 gap-2">
+					<div className="flex flex-row flex-wrap items-center justify-around mb-2">
 						<div className="flex space-x-2">
-							<button className={`py-1 px-4 rounded-md ${tool === "draw" ? "bg-gray-700 text-white" : "bg-white text-black"}`} onClick={() => setTool("draw")}>
+							<button className={`py-1 px-3 rounded-md ${tool === "draw" ? "bg-gray-700 text-white" : "bg-white text-black"}`} onClick={() => setTool("draw")}>
 								Draw
 							</button>
-							<button className={`py-1 px-4 rounded-md ${tool === "erase" ? "bg-gray-700 text-white" : "bg-white text-black"}`} onClick={() => setTool("erase")}>
+							<button className={`py-1 px-3 rounded-md ${tool === "erase" ? "bg-gray-700 text-white" : "bg-white text-black"}`} onClick={() => setTool("erase")}>
 								Erase
 							</button>
+							{canvasMobileMode && (
+								<button className={`py-1 px-3 rounded-md ${tool === "move" ? "bg-gray-700 text-white" : "bg-white text-black"}`} onClick={() => setTool("move")}>
+									Move
+								</button>
+							)}
 						</div>
 						<div className="flex flex-row items-center justify-center">
 							<label className="text-white mr-1">Color:</label>
-							<input type="color" value={color} onChange={e => setColor(e.target.value)} disabled={tool === "erase"} className={`${tool === "erase" ? "cursor-not-allowed" : "cursor-pointer"}`} />
+							<input type="color" value={color} onChange={e => setColor(e.target.value)} disabled={tool === "erase" || tool === "move"} className={`${tool === "erase" || tool === "move" ? "cursor-not-allowed" : "cursor-pointer"}`} />
 						</div>
 					</div>
-
-					{canvasMobileMode && (
-						<div className="mb-2 flex justify-center">
-							<button
-								className="bg-blue-500 py-1 px-4 rounded-md text-white"
-								onTouchStart={e => {
-									e.preventDefault();
-									startPanning(e.touches[0].clientX, e.touches[0].clientY);
-								}}
-								onMouseDown={e => startPanning(e.clientX, e.clientY)}
-							>
-								{isPanning ? "Release to Draw" : "Hold to Move Canvas"}
-							</button>
-						</div>
-					)}
 
 					<div ref={canvasContainerRef} className={`relative mx-auto overflow-hidden ${canvasMobileMode ? "border border-gray-400 rounded-md" : ""}`} style={canvasMobileMode ? { width: "100%", height: "70vh" } : {}}>
 						<div
@@ -350,7 +360,7 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 								width: canvasSize.width,
 								height: canvasSize.height,
 								transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
-								transition: "transform 0.05s ease",
+								transition: tool === "move" ? "transform 0.05s ease" : "none",
 							}}
 							className="relative"
 						>
@@ -360,28 +370,28 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 								width={canvasSize.width}
 								height={canvasSize.height}
 								onMouseDown={e => {
-									if (canvasMobileMode && isPanning) {
-										panMove(e.clientX, e.clientY);
+									if (tool === "move") {
+										startPanning(e.clientX, e.clientY);
 									} else {
 										startDrawing(e.clientX, e.clientY);
 									}
 								}}
 								onMouseMove={e => {
-									if (isPanning) {
+									if (tool === "move") {
 										panMove(e.clientX, e.clientY);
 									} else {
 										drawMove(e.clientX, e.clientY);
 									}
 								}}
 								onMouseUp={e => {
-									if (isPanning) {
+									if (tool === "move") {
 										endPanning();
 									} else {
 										endDrawing();
 									}
 								}}
 								onMouseLeave={e => {
-									if (isPanning) {
+									if (tool === "move") {
 										endPanning();
 									} else {
 										endDrawing();
@@ -390,10 +400,9 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 								onTouchStart={e => {
 									e.preventDefault();
 									if (!e.touches.length) return;
-
 									const t = e.touches[0];
-									if (canvasMobileMode && isPanning) {
-										panMove(t.clientX, t.clientY);
+									if (tool === "move") {
+										startPanning(t.clientX, t.clientY);
 									} else {
 										startDrawing(t.clientX, t.clientY);
 									}
@@ -401,9 +410,8 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 								onTouchMove={e => {
 									e.preventDefault();
 									if (!e.touches.length) return;
-
 									const t = e.touches[0];
-									if (isPanning) {
+									if (tool === "move") {
 										panMove(t.clientX, t.clientY);
 									} else if (isDrawingRef.current) {
 										drawMove(t.clientX, t.clientY);
@@ -411,7 +419,7 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 								}}
 								onTouchEnd={e => {
 									e.preventDefault();
-									if (isPanning) {
+									if (tool === "move") {
 										endPanning();
 									} else {
 										endDrawing();
@@ -419,20 +427,20 @@ export default function BoardClient({ boardId }: { boardId: string }) {
 								}}
 								onTouchCancel={e => {
 									e.preventDefault();
-									if (isPanning) {
+									if (tool === "move") {
 										endPanning();
 									} else {
 										endDrawing();
 									}
 								}}
-								className="absolute top-0 left-0 z-20 bg-transparent cursor-crosshair rounded-md touch-none"
+								className={`absolute top-0 left-0 z-20 bg-transparent rounded-md touch-none ${tool === "move" ? "cursor-move" : "cursor-crosshair"}`}
 							/>
 						</div>
 					</div>
 
-					{canvasMobileMode && (
+					{canvasMobileMode && tool === "move" && (
 						<div className="mt-2 text-center text-white text-sm">
-							<p>Canvas can be moved by holding the button above.</p>
+							<p>Drag to move the canvas. Switch back to Draw or Erase when done.</p>
 						</div>
 					)}
 				</>
