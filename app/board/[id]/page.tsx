@@ -10,7 +10,7 @@ export default async function BoardPage({ params }: { params: Promise<{ id: stri
 
 	return (
 		<main className="flex flex-col items-center min-h-screen w-full">
-			<h1 className="w-full mx-auto h-10 flex items-center justify-center font-bold bg-white bg-opacity-50 mb-4 text-black">
+			<h1 className="w-full mx-auto h-10 flex items-center justify-center font-bold bg-white bg-opacity-50 mb-4 text-black padding40vwleft">
 				<ReturnHomeButton />
 				Board {id}
 			</h1>
